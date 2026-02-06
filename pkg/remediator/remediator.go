@@ -83,6 +83,11 @@ func (r *Remediator) Generate(result *models.ScanResult) error {
 		return fmt.Errorf("failed to generate STIG mapping: %w", err)
 	}
 
+	// Generate config file templates
+	if err := r.generateConfigTemplates(); err != nil {
+		return fmt.Errorf("failed to generate config templates: %w", err)
+	}
+
 	fmt.Printf("Remediation playbook generated at: %s\n", r.outputDir)
 	return nil
 }
@@ -452,6 +457,166 @@ func (r *Remediator) generateSTIGMapping(findings []models.Finding) error {
 	}
 
 	return os.WriteFile(filepath.Join(r.outputDir, "stig-mapping.yml"), []byte(mapping.String()), 0600)
+}
+
+func (r *Remediator) generateConfigTemplates() error {
+	templatesDir := filepath.Join(r.outputDir, "roles", "stig-remediation", "templates")
+
+	// Generate audit-policy.yaml template
+	auditPolicy := `# Kubernetes Audit Policy - STIG Compliant
+# V-242380, V-242381, V-242382
+# Deploy to: /etc/kubernetes/audit-policy.yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  # Log all requests at the Metadata level
+  - level: Metadata
+    resources:
+    - group: ""
+      resources: ["secrets", "configmaps"]
+
+  # Log pod changes at RequestResponse level
+  - level: RequestResponse
+    resources:
+    - group: ""
+      resources: ["pods", "pods/log", "pods/status"]
+
+  # Log authentication events
+  - level: Metadata
+    nonResourceURLs:
+    - /api*
+    - /version
+
+  # Log all other resources at Metadata level
+  - level: Metadata
+    resources:
+    - group: ""
+    - group: "apps"
+    - group: "batch"
+    - group: "networking.k8s.io"
+    - group: "rbac.authorization.k8s.io"
+
+  # Catch-all rule
+  - level: Metadata
+`
+
+	if err := os.WriteFile(filepath.Join(templatesDir, "audit-policy.yaml.j2"), []byte(auditPolicy), 0600); err != nil {
+		return fmt.Errorf("failed to write audit policy template: %w", err)
+	}
+
+	// Generate encryption-config.yaml template
+	encryptionConfig := `# Kubernetes Encryption Configuration - STIG Compliant
+# V-242388 - Secrets must be encrypted at rest
+# Deploy to: /etc/kubernetes/encryption-config.yaml
+#
+# IMPORTANT: Generate a new encryption key before deploying!
+# Run: head -c 32 /dev/urandom | base64
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources:
+      - secrets
+    providers:
+      # AES-CBC with PKCS#7 padding (FIPS 140-2 compliant)
+      - aescbc:
+          keys:
+            - name: key1
+              # REPLACE THIS KEY - generate with: head -c 32 /dev/urandom | base64
+              secret: {{ stig_encryption_key | default('REPLACE_ME_WITH_BASE64_KEY') }}
+      # Allow reading unencrypted secrets (for migration)
+      - identity: {}
+`
+
+	if err := os.WriteFile(filepath.Join(templatesDir, "encryption-config.yaml.j2"), []byte(encryptionConfig), 0600); err != nil {
+		return fmt.Errorf("failed to write encryption config template: %w", err)
+	}
+
+	// Generate kubelet-config.yaml template
+	kubeletConfig := `# Kubelet Configuration - STIG Compliant
+# V-242415 through V-242425
+# Deploy to: /var/lib/kubelet/config.yaml
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+authentication:
+  anonymous:
+    enabled: {{ stig_kubelet_anonymous_auth | default(false) }}
+  webhook:
+    enabled: true
+    cacheTTL: 2m0s
+  x509:
+    clientCAFile: {{ stig_kubelet_client_ca | default('/etc/kubernetes/pki/ca.crt') }}
+authorization:
+  mode: {{ stig_kubelet_authorization_mode | default('Webhook') }}
+  webhook:
+    cacheAuthorizedTTL: 5m0s
+    cacheUnauthorizedTTL: 30s
+readOnlyPort: {{ stig_kubelet_read_only_port | default(0) }}
+protectKernelDefaults: {{ stig_kubelet_protect_kernel_defaults | default(true) }}
+makeIPTablesUtilChains: {{ stig_kubelet_make_iptables_util_chains | default(true) }}
+streamingConnectionIdleTimeout: {{ stig_kubelet_streaming_timeout | default('5m') }}
+tlsCertFile: {{ stig_kubelet_tls_cert | default('/var/lib/kubelet/pki/kubelet.crt') }}
+tlsPrivateKeyFile: {{ stig_kubelet_tls_key | default('/var/lib/kubelet/pki/kubelet.key') }}
+tlsMinVersion: {{ stig_kubelet_tls_min_version | default('VersionTLS12') }}
+`
+
+	if err := os.WriteFile(filepath.Join(templatesDir, "kubelet-config.yaml.j2"), []byte(kubeletConfig), 0600); err != nil {
+		return fmt.Errorf("failed to write kubelet config template: %w", err)
+	}
+
+	// Generate a task to deploy these templates
+	deployTasks := `---
+# Deploy STIG-compliant configuration files
+# Include this in your main.yml when needed
+
+- name: Generate encryption key if not set
+  set_fact:
+    stig_encryption_key: "{{ lookup('pipe', 'head -c 32 /dev/urandom | base64') }}"
+  when: stig_encryption_key is not defined
+  run_once: true
+  delegate_to: localhost
+
+- name: Deploy audit policy
+  template:
+    src: audit-policy.yaml.j2
+    dest: /etc/kubernetes/audit-policy.yaml
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Wait for API server
+
+- name: Create audit log directory
+  file:
+    path: /var/log/kubernetes/audit
+    state: directory
+    owner: root
+    group: root
+    mode: '0750'
+
+- name: Deploy encryption configuration
+  template:
+    src: encryption-config.yaml.j2
+    dest: /etc/kubernetes/encryption-config.yaml
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Wait for API server
+
+- name: Deploy kubelet configuration
+  template:
+    src: kubelet-config.yaml.j2
+    dest: /var/lib/kubelet/config.yaml
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Restart kubelet
+`
+
+	roleDir := filepath.Join(r.outputDir, "roles", "stig-remediation", "tasks")
+	if err := os.WriteFile(filepath.Join(roleDir, "deploy-configs.yml"), []byte(deployTasks), 0600); err != nil {
+		return fmt.Errorf("failed to write deploy configs task: %w", err)
+	}
+
+	return nil
 }
 
 // Helper functions
