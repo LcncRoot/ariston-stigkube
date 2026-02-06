@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aristonllc/stigkube/pkg/models"
@@ -193,6 +194,7 @@ func buildXCCDF(result *models.ScanResult) xccdfBenchmark {
 		models.StatusNotReviewed:   "notchecked",
 		models.StatusNotApplicable: "notapplicable",
 		models.StatusError:         "error",
+		models.StatusManualReview:  "informational",
 	}
 
 	// Build rule results
@@ -261,17 +263,4 @@ func severityToXCCDF(cat string) string {
 	default:
 		return "unknown"
 	}
-}
-
-// strings helper to avoid importing strings for one function
-var strings = struct {
-	Repeat func(string, int) string
-}{
-	Repeat: func(s string, count int) string {
-		result := ""
-		for i := 0; i < count; i++ {
-			result += s
-		}
-		return result
-	},
 }
