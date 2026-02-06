@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 
@@ -65,6 +64,7 @@ func checkNamespaceIsolation(ctx context.Context, client *kubernetes.Clientset) 
 	var findings []models.Finding
 	namespacesWithoutNetPol := []string{}
 
+	var checkErrors []string
 	for _, ns := range namespaces.Items {
 		// Skip system namespaces
 		if isSystemNamespace(ns.Name) {
@@ -74,12 +74,23 @@ func checkNamespaceIsolation(ctx context.Context, client *kubernetes.Clientset) 
 		// Check if namespace has any NetworkPolicies
 		netpols, err := client.NetworkingV1().NetworkPolicies(ns.Name).List(ctx, metav1.ListOptions{Limit: 1})
 		if err != nil {
+			// Record error but continue checking other namespaces
+			checkErrors = append(checkErrors, fmt.Sprintf("%s: %v", ns.Name, err))
 			continue
 		}
 
 		if len(netpols.Items) == 0 {
 			namespacesWithoutNetPol = append(namespacesWithoutNetPol, ns.Name)
 		}
+	}
+
+	// Report any errors that occurred during checking
+	if len(checkErrors) > 0 {
+		findings = append(findings, models.Finding{
+			Control: *control,
+			Status:  models.StatusError,
+			Details: fmt.Sprintf("Failed to check NetworkPolicies in some namespaces: %v", checkErrors),
+		})
 	}
 
 	if len(namespacesWithoutNetPol) > 0 {
@@ -110,28 +121,40 @@ func checkSecretsInEnv(ctx context.Context, client *kubernetes.Clientset) ([]mod
 		}}, nil
 	}
 
-	// List all pods and check for secrets referenced in environment variables
-	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, err
-	}
-
+	// List pods with pagination to avoid OOM on large clusters
 	podsWithSecretsInEnv := []string{}
+	continueToken := ""
 
-	for _, pod := range pods.Items {
-		if isSystemNamespace(pod.Namespace) {
-			continue
+	for {
+		pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+			Limit:    500,
+			Continue: continueToken,
+		})
+		if err != nil {
+			return nil, err
 		}
 
-		for _, container := range pod.Spec.Containers {
-			for _, env := range container.Env {
-				if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
-					podsWithSecretsInEnv = append(podsWithSecretsInEnv,
-						fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
-					break
+		for _, pod := range pods.Items {
+			if isSystemNamespace(pod.Namespace) {
+				continue
+			}
+
+			for _, container := range pod.Spec.Containers {
+				for _, env := range container.Env {
+					if env.ValueFrom != nil && env.ValueFrom.SecretKeyRef != nil {
+						podsWithSecretsInEnv = append(podsWithSecretsInEnv,
+							fmt.Sprintf("%s/%s", pod.Namespace, pod.Name))
+						break
+					}
 				}
 			}
 		}
+
+		// Check if there are more pages
+		if pods.Continue == "" {
+			break
+		}
+		continueToken = pods.Continue
 	}
 
 	var findings []models.Finding
@@ -267,6 +290,3 @@ func isSystemNamespace(name string) bool {
 	}
 	return systemNamespaces[name]
 }
-
-// Unused but kept for potential future use with pod checking
-var _ = func() corev1.Pod { return corev1.Pod{} }
