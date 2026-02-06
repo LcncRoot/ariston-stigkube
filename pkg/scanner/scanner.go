@@ -12,6 +12,7 @@ import (
 	"github.com/aristonllc/stigkube/pkg/models"
 	"github.com/aristonllc/stigkube/pkg/scanner/apiserver"
 	"github.com/aristonllc/stigkube/pkg/scanner/general"
+	"github.com/aristonllc/stigkube/pkg/scanner/node"
 	"github.com/aristonllc/stigkube/pkg/stig"
 )
 
@@ -91,13 +92,15 @@ func (s *Scanner) Scan() (*models.ScanResult, error) {
 		result.Findings = append(result.Findings, generalFindings...)
 	}
 
-	// TODO: Add more check categories
-	// - kubelet checks (requires node access)
-	// - etcd checks (requires node access)
-	// - scheduler checks
-	// - controller manager checks
-	// - proxy checks
-	// - node permission checks
+	// Run node-level checks (requires privileged pod deployment)
+	fmt.Println("  Checking node-level controls (deploying scanner pods)...")
+	nodeScanner := node.New(s.client)
+	nodeFindings, err := nodeScanner.ScanAllNodes(ctx)
+	if err != nil {
+		fmt.Printf("  Warning: Node-level checks failed: %v\n", err)
+	} else {
+		result.Findings = append(result.Findings, nodeFindings...)
+	}
 
 	fmt.Printf("  Completed %d checks\n", len(result.Findings))
 
