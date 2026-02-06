@@ -90,8 +90,8 @@ func printFinding(finding models.Finding) {
 
 // WriteJSON writes scan results to a JSON file
 func WriteJSON(result *models.ScanResult, outputDir string) error {
-	// Ensure output directory exists
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
+	// Ensure output directory exists (0750 per STIG file permission requirements)
+	if err := os.MkdirAll(outputDir, 0750); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
@@ -105,8 +105,8 @@ func WriteJSON(result *models.ScanResult, outputDir string) error {
 		return fmt.Errorf("failed to marshal results: %w", err)
 	}
 
-	// Write file
-	if err := os.WriteFile(filepath, data, 0644); err != nil {
+	// Write file (0600 per STIG file permission requirements)
+	if err := os.WriteFile(filepath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
