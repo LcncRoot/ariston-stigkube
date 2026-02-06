@@ -30,32 +30,124 @@ cd ariston-stigkube
 go build -o stigkube ./cmd/stigkube/
 ```
 
-## Usage
-
-### Scan a cluster
+## Quick Start
 
 ```bash
-# Use default kubeconfig (~/.kube/config)
+# 1. Install
+go install github.com/aristonllc/stigkube/cmd/stigkube@latest
+
+# 2. Ensure you have cluster access
+kubectl get nodes
+
+# 3. Run a scan
 stigkube scan
 
-# Specify kubeconfig
-stigkube scan --kubeconfig /path/to/config
-
-# Output as JSON
-stigkube scan --json --output ./results/
+# 4. Review findings and generate remediation
+stigkube scan --remediate --output ./remediation/
 ```
 
-### Generate remediation
+## Usage
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `stigkube scan` | Scan cluster against STIG controls |
+| `stigkube remediate` | Generate Ansible remediation from scan results |
+| `stigkube report` | Generate reports from saved scan results |
+| `stigkube version` | Print version information |
+
+### Global Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--kubeconfig` | Path to kubeconfig file | `~/.kube/config` |
+| `--output`, `-o` | Output directory for reports and remediation | `./stigkube-output` |
+
+### Scan Command
 
 ```bash
-# Scan and generate Ansible remediation
-stigkube scan --remediate --output ./stigkube-output/
+# Basic scan using default kubeconfig
+stigkube scan
+
+# Scan a specific cluster
+stigkube scan --kubeconfig /path/to/kubeconfig
+
+# Scan with JSON output
+stigkube scan --json
+
+# Scan with verbose output (shows each check as it runs)
+stigkube scan --verbose
+
+# Scan and immediately generate remediation playbook
+stigkube scan --remediate
+
+# Full example: scan, output JSON, generate remediation to specific directory
+stigkube scan --json --remediate --output ./my-cluster-results/
 ```
 
-### View version
+#### Scan Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output results as JSON instead of text |
+| `--remediate` | Generate Ansible remediation after scan |
+| `--verbose`, `-v` | Show detailed output during scan |
+
+### Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Scan completed, no CAT I (high severity) failures |
+| 1 | Scan completed with CAT I failures, or scan error |
+
+Use exit codes in CI/CD pipelines to gate deployments on STIG compliance.
+
+### Example Workflow
 
 ```bash
-stigkube version
+# 1. Initial assessment
+stigkube scan --output ./baseline/
+
+# 2. Review the findings
+cat ./baseline/scan-results-*.json | jq '.summary'
+
+# 3. Generate remediation
+stigkube scan --remediate --output ./remediation/
+
+# 4. Apply remediation (review first!)
+cd ./remediation/
+ansible-playbook -i inventory site.yml --check  # Dry run
+ansible-playbook -i inventory site.yml          # Apply
+
+# 5. Re-scan to verify
+stigkube scan --output ./post-remediation/
+
+# 6. Compare results
+diff <(jq '.summary' ./baseline/scan-results-*.json) \
+     <(jq '.summary' ./post-remediation/scan-results-*.json)
+```
+
+### CI/CD Integration
+
+```yaml
+# GitLab CI example
+stig-scan:
+  stage: security
+  script:
+    - stigkube scan --json --output ./stig-results/
+  artifacts:
+    paths:
+      - stig-results/
+  allow_failure: false  # Fails pipeline on CAT I findings
+```
+
+```yaml
+# GitHub Actions example
+- name: STIG Compliance Scan
+  run: |
+    stigkube scan --json --output ./stig-results/
+  continue-on-error: false
 ```
 
 ## What It Checks
