@@ -102,9 +102,84 @@ func (s *Scanner) Scan() (*models.ScanResult, error) {
 		result.Findings = append(result.Findings, nodeFindings...)
 	}
 
+	// Deduplicate findings - prefer node-level over API-level, prefer pass/fail over not_reviewed
+	result.Findings = deduplicateFindings(result.Findings)
+
 	fmt.Printf("  Completed %d checks\n", len(result.Findings))
 
 	return result, nil
+}
+
+// deduplicateFindings removes duplicate findings for the same control,
+// preferring node-level findings and pass/fail over not_reviewed
+func deduplicateFindings(findings []models.Finding) []models.Finding {
+	// Map to track best finding per control ID (and node if applicable)
+	bestFindings := make(map[string]models.Finding)
+
+	for _, f := range findings {
+		// Create key based on control ID and node
+		key := f.Control.ID
+		if f.NodeName != "" {
+			key = f.Control.ID + ":" + f.NodeName
+		}
+
+		existing, exists := bestFindings[key]
+		if !exists {
+			bestFindings[key] = f
+			continue
+		}
+
+		// Prefer findings in this order:
+		// 1. Pass/Fail over NotReviewed/Error
+		// 2. Node-level (has NodeName) over API-level
+		// 3. More specific details
+		if shouldReplace(existing, f) {
+			bestFindings[key] = f
+		}
+	}
+
+	// Convert map back to slice
+	result := make([]models.Finding, 0, len(bestFindings))
+	for _, f := range bestFindings {
+		result = append(result, f)
+	}
+
+	return result
+}
+
+// shouldReplace returns true if newFinding should replace existing
+func shouldReplace(existing, newFinding models.Finding) bool {
+	// Priority order for status
+	statusPriority := map[string]int{
+		models.StatusPass:          4,
+		models.StatusFail:          3,
+		models.StatusNotApplicable: 2,
+		models.StatusNotReviewed:   1,
+		models.StatusError:         0,
+	}
+
+	existingPriority := statusPriority[existing.Status]
+	newPriority := statusPriority[newFinding.Status]
+
+	// Higher priority status wins
+	if newPriority > existingPriority {
+		return true
+	}
+	if newPriority < existingPriority {
+		return false
+	}
+
+	// Same priority - prefer node-level findings
+	if newFinding.NodeName != "" && existing.NodeName == "" {
+		return true
+	}
+
+	// Prefer findings with actual values
+	if newFinding.ActualValue != "" && existing.ActualValue == "" {
+		return true
+	}
+
+	return false
 }
 
 // getControlsForComponent returns STIG controls for a specific component
