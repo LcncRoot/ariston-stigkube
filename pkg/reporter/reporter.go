@@ -2,6 +2,7 @@ package reporter
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,6 +113,154 @@ func WriteJSON(result *models.ScanResult, outputDir string) error {
 
 	fmt.Printf("Results written to: %s\n", filepath)
 	return nil
+}
+
+// WriteXCCDF writes scan results in XCCDF format for STIG Viewer import
+func WriteXCCDF(result *models.ScanResult, outputDir string) error {
+	// Ensure output directory exists
+	if err := os.MkdirAll(outputDir, 0750); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Generate filename
+	filename := fmt.Sprintf("xccdf-results-%s.xml", result.ScanTimestamp.Format("2006-01-02-150405"))
+	fpath := filepath.Join(outputDir, filename)
+
+	// Build XCCDF structure
+	xccdf := buildXCCDF(result)
+
+	// Marshal to XML
+	data, err := xml.MarshalIndent(xccdf, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal XCCDF: %w", err)
+	}
+
+	// Add XML header
+	xmlData := []byte(xml.Header + string(data))
+
+	// Write file
+	if err := os.WriteFile(fpath, xmlData, 0600); err != nil {
+		return fmt.Errorf("failed to write XCCDF file: %w", err)
+	}
+
+	fmt.Printf("XCCDF results written to: %s\n", fpath)
+	return nil
+}
+
+// XCCDF XML structures for STIG Viewer compatibility
+type xccdfBenchmark struct {
+	XMLName   xml.Name         `xml:"Benchmark"`
+	XMLNS     string           `xml:"xmlns,attr"`
+	ID        string           `xml:"id,attr"`
+	TestResult xccdfTestResult `xml:"TestResult"`
+}
+
+type xccdfTestResult struct {
+	ID          string            `xml:"id,attr"`
+	StartTime   string            `xml:"start-time,attr"`
+	EndTime     string            `xml:"end-time,attr"`
+	Target      string            `xml:"target"`
+	TargetFacts []xccdfFact       `xml:"target-facts>fact"`
+	RuleResults []xccdfRuleResult `xml:"rule-result"`
+	Score       xccdfScore        `xml:"score"`
+}
+
+type xccdfFact struct {
+	Name  string `xml:"name,attr"`
+	Type  string `xml:"type,attr"`
+	Value string `xml:",chardata"`
+}
+
+type xccdfRuleResult struct {
+	IDRef    string `xml:"idref,attr"`
+	Severity string `xml:"severity,attr,omitempty"`
+	Time     string `xml:"time,attr"`
+	Result   string `xml:"result"`
+	Message  string `xml:"message,omitempty"`
+}
+
+type xccdfScore struct {
+	System   string  `xml:"system,attr"`
+	Maximum  float64 `xml:"maximum,attr"`
+	Value    float64 `xml:",chardata"`
+}
+
+func buildXCCDF(result *models.ScanResult) xccdfBenchmark {
+	// Map our status values to XCCDF result values
+	statusMap := map[string]string{
+		models.StatusPass:          "pass",
+		models.StatusFail:          "fail",
+		models.StatusNotReviewed:   "notchecked",
+		models.StatusNotApplicable: "notapplicable",
+		models.StatusError:         "error",
+	}
+
+	// Build rule results
+	var ruleResults []xccdfRuleResult
+	for _, finding := range result.Findings {
+		xccdfResult := statusMap[finding.Status]
+		if xccdfResult == "" {
+			xccdfResult = "unknown"
+		}
+
+		// Build message with details
+		message := finding.Details
+		if finding.ActualValue != "" {
+			message += fmt.Sprintf(" (Actual: %s)", finding.ActualValue)
+		}
+		if finding.NodeName != "" {
+			message += fmt.Sprintf(" [Node: %s]", finding.NodeName)
+		}
+
+		ruleResults = append(ruleResults, xccdfRuleResult{
+			IDRef:    finding.Control.STIGID,
+			Severity: severityToXCCDF(finding.Control.CAT),
+			Time:     result.ScanTimestamp.Format(time.RFC3339),
+			Result:   xccdfResult,
+			Message:  message,
+		})
+	}
+
+	// Calculate score (percentage of passing checks)
+	var score float64
+	if result.Summary.Total > 0 {
+		score = float64(result.Summary.Pass) / float64(result.Summary.Total) * 100
+	}
+
+	return xccdfBenchmark{
+		XMLNS: "http://checklists.nist.gov/xccdf/1.2",
+		ID:    "Kubernetes_STIG",
+		TestResult: xccdfTestResult{
+			ID:        fmt.Sprintf("stigkube-scan-%s", result.ScanTimestamp.Format("20060102-150405")),
+			StartTime: result.ScanTimestamp.Format(time.RFC3339),
+			EndTime:   result.ScanTimestamp.Format(time.RFC3339),
+			Target:    result.ClusterName,
+			TargetFacts: []xccdfFact{
+				{Name: "urn:stigkube:fact:kubernetes-version", Type: "string", Value: result.KubernetesVersion},
+				{Name: "urn:stigkube:fact:deployment-method", Type: "string", Value: result.DeploymentMethod},
+				{Name: "urn:stigkube:fact:node-count", Type: "number", Value: fmt.Sprintf("%d", result.NodeCount)},
+			},
+			RuleResults: ruleResults,
+			Score: xccdfScore{
+				System:  "urn:xccdf:scoring:default",
+				Maximum: 100,
+				Value:   score,
+			},
+		},
+	}
+}
+
+func severityToXCCDF(cat string) string {
+	switch cat {
+	case "I":
+		return "high"
+	case "II":
+		return "medium"
+	case "III":
+		return "low"
+	default:
+		return "unknown"
+	}
 }
 
 // strings helper to avoid importing strings for one function

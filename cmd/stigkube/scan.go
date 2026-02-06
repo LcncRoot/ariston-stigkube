@@ -17,6 +17,7 @@ import (
 var (
 	remediate   bool
 	jsonOutput  bool
+	xccdfOutput bool
 	verboseMode bool
 )
 
@@ -41,6 +42,7 @@ Examples:
 func init() {
 	scanCmd.Flags().BoolVar(&remediate, "remediate", false, "Generate remediation playbook after scan")
 	scanCmd.Flags().BoolVar(&jsonOutput, "json", false, "Output results as JSON")
+	scanCmd.Flags().BoolVar(&xccdfOutput, "xccdf", false, "Output results as XCCDF for STIG Viewer import")
 	scanCmd.Flags().BoolVarP(&verboseMode, "verbose", "v", false, "Verbose output")
 }
 
@@ -93,6 +95,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		reporter.PrintSummary(result)
+	}
+
+	// Generate XCCDF output for STIG Viewer
+	if xccdfOutput {
+		if err := reporter.WriteXCCDF(result, output); err != nil {
+			return fmt.Errorf("failed to write XCCDF report: %w", err)
+		}
 	}
 
 	// Generate remediation if requested
