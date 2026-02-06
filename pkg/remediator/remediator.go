@@ -447,7 +447,7 @@ func (r *Remediator) generateSTIGMapping(findings []models.Finding) error {
 		mapping.WriteString(fmt.Sprintf("  - id: %s\n", f.Control.ID))
 		mapping.WriteString(fmt.Sprintf("    stig_id: %s\n", f.Control.STIGID))
 		mapping.WriteString(fmt.Sprintf("    severity: %s\n", f.Control.CAT))
-		mapping.WriteString(fmt.Sprintf("    title: \"%s\"\n", f.Control.Title))
+		mapping.WriteString(fmt.Sprintf("    title: \"%s\"\n", strings.ReplaceAll(f.Control.Title, "\"", "'")))
 		mapping.WriteString(fmt.Sprintf("    status: %s\n", f.Status))
 		mapping.WriteString(fmt.Sprintf("    details: \"%s\"\n", strings.ReplaceAll(f.Details, "\"", "'")))
 		if f.NodeName != "" {
