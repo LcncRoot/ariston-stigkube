@@ -13,13 +13,13 @@ import (
 	"github.com/aristonllc/stigkube/pkg/scanner/apiserver"
 	"github.com/aristonllc/stigkube/pkg/scanner/general"
 	"github.com/aristonllc/stigkube/pkg/scanner/node"
-	"github.com/aristonllc/stigkube/pkg/stig"
 )
 
 // Scanner performs STIG compliance checks against a Kubernetes cluster
 type Scanner struct {
-	client     *kubernetes.Clientset
-	kubeconfig string
+	client      *kubernetes.Clientset
+	kubeconfig  string
+	clusterName string
 }
 
 // New creates a new Scanner with the given kubeconfig
@@ -34,10 +34,47 @@ func New(kubeconfig string) (*Scanner, error) {
 		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
 	}
 
+	// Extract cluster name from kubeconfig
+	clusterName := extractClusterName(kubeconfig)
+
 	return &Scanner{
-		client:     client,
-		kubeconfig: kubeconfig,
+		client:      client,
+		kubeconfig:  kubeconfig,
+		clusterName: clusterName,
 	}, nil
+}
+
+// extractClusterName reads the current context's cluster name from kubeconfig
+func extractClusterName(kubeconfigPath string) string {
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	loadingRules.ExplicitPath = kubeconfigPath
+
+	configOverrides := &clientcmd.ConfigOverrides{}
+	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+
+	rawConfig, err := kubeConfig.RawConfig()
+	if err != nil {
+		return "unknown"
+	}
+
+	// Get current context
+	currentContext := rawConfig.CurrentContext
+	if currentContext == "" {
+		return "unknown"
+	}
+
+	// Get the context details
+	ctx, exists := rawConfig.Contexts[currentContext]
+	if !exists || ctx == nil {
+		return currentContext // Fall back to context name
+	}
+
+	// Return the cluster name from the context
+	if ctx.Cluster != "" {
+		return ctx.Cluster
+	}
+
+	return currentContext
 }
 
 // Client returns the kubernetes client
@@ -68,8 +105,8 @@ func (s *Scanner) Scan() (*models.ScanResult, error) {
 	}
 	result.NodeCount = len(nodes.Items)
 
-	// Get cluster name from kubeconfig context (if available)
-	result.ClusterName = "unknown"
+	// Get cluster name from kubeconfig context
+	result.ClusterName = s.clusterName
 
 	fmt.Printf("Scanning cluster: %s (Kubernetes %s, %d nodes)\n",
 		result.ClusterName, result.KubernetesVersion, result.NodeCount)
@@ -179,49 +216,5 @@ func shouldReplace(existing, newFinding models.Finding) bool {
 		return true
 	}
 
-	return false
-}
-
-// getControlsForComponent returns STIG controls for a specific component
-func getControlsForComponent(component string) []models.Control {
-	var controls []models.Control
-	for _, c := range stig.Controls {
-		// Simple matching based on title/description keywords
-		switch component {
-		case "apiserver":
-			if containsAny(c.Title, "API Server", "API server") {
-				controls = append(controls, c)
-			}
-		case "kubelet":
-			if containsAny(c.Title, "Kubelet", "kubelet") {
-				controls = append(controls, c)
-			}
-		case "etcd":
-			if containsAny(c.Title, "etcd", "Etcd") {
-				controls = append(controls, c)
-			}
-		case "scheduler":
-			if containsAny(c.Title, "Scheduler", "scheduler") {
-				controls = append(controls, c)
-			}
-		case "controller":
-			if containsAny(c.Title, "Controller Manager", "controller manager") {
-				controls = append(controls, c)
-			}
-		}
-	}
-	return controls
-}
-
-func containsAny(s string, substrs ...string) bool {
-	for _, sub := range substrs {
-		if len(s) >= len(sub) {
-			for i := 0; i <= len(s)-len(sub); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
-		}
-	}
 	return false
 }
