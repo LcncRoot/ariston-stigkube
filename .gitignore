@@ -1,0 +1,38 @@
+# Binaries
+stigkube
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output directories
+bin/
+dist/
+output/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+vendor/
+
+# Development notes (do not commit)
+notes.md
+
+# Temporary files
+*.tmp
+*.log
+
+# Test outputs
+coverage.out
+coverage.html
