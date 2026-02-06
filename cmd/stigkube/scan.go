@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aristonllc/stigkube/pkg/detector"
+	"github.com/aristonllc/stigkube/pkg/remediator"
 	"github.com/aristonllc/stigkube/pkg/reporter"
 	"github.com/aristonllc/stigkube/pkg/scanner"
 	"github.com/aristonllc/stigkube/pkg/stig"
@@ -97,7 +98,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Generate remediation if requested
 	if remediate {
 		fmt.Println("\nGenerating remediation playbook...")
-		if err := runRemediate(cmd, args); err != nil {
+		remediationDir := filepath.Join(output, "remediation")
+		rem := remediator.New(deployMethod, remediationDir)
+		if err := rem.Generate(result); err != nil {
 			return fmt.Errorf("remediation generation failed: %w", err)
 		}
 	}
