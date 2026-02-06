@@ -551,6 +551,8 @@ func extractYAMLValue(config, path string) string {
 					// This is the final key, extract value
 					value := strings.TrimPrefix(trimmed, key+":")
 					value = strings.TrimSpace(value)
+					// Strip inline comments (# ...)
+					value = stripYAMLComment(value)
 					return value
 				}
 				pathIndex++
@@ -568,4 +570,31 @@ func extractYAMLValue(config, path string) string {
 	}
 
 	return ""
+}
+
+// stripYAMLComment removes inline comments from YAML values
+// Handles: "value # comment" -> "value"
+// Preserves: "value#without-space" (not a comment)
+// Preserves: "'value # with hash'" (quoted strings)
+func stripYAMLComment(value string) string {
+	// Empty value
+	if value == "" {
+		return value
+	}
+
+	// Check if value is quoted (single or double)
+	if (strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) ||
+		(strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) {
+		return value
+	}
+
+	// Find comment marker (# preceded by space)
+	// Note: In YAML, # only starts a comment if preceded by whitespace
+	for i := 0; i < len(value); i++ {
+		if value[i] == '#' && i > 0 && (value[i-1] == ' ' || value[i-1] == '\t') {
+			return strings.TrimSpace(value[:i])
+		}
+	}
+
+	return value
 }
