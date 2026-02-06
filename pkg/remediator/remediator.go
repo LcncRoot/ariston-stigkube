@@ -485,8 +485,8 @@ func (r *Remediator) getKubeletConfigPath() string {
 func (r *Remediator) generateManifestPatchTask(f models.Finding, manifestPath string) string {
 	// Extract flag name and value from expected
 	flag, value := parseExpectedFlag(f.ExpectedValue)
-	if flag == "" {
-		return fmt.Sprintf("# TODO: Manual remediation required - %s\n", f.ExpectedValue)
+	if flag == "" || value == "" {
+		return fmt.Sprintf("# TODO: Manual remediation required for %s\n# Expected: %s\n# See STIG control %s for guidance\n\n", f.Control.ID, f.ExpectedValue, f.Control.STIGID)
 	}
 
 	return fmt.Sprintf(`- name: "Remediate %s - %s"
@@ -506,8 +506,8 @@ func (r *Remediator) generateManifestPatchTask(f models.Finding, manifestPath st
 func (r *Remediator) generateKubeletConfigTask(f models.Finding, configPath string) string {
 	// Extract setting name and value
 	setting, value := parseExpectedYAML(f.ExpectedValue)
-	if setting == "" {
-		return fmt.Sprintf("# TODO: Manual remediation required - %s\n", f.ExpectedValue)
+	if setting == "" || value == "" {
+		return fmt.Sprintf("# TODO: Manual remediation required for %s\n# Expected: %s\n# See STIG control %s for guidance\n\n", f.Control.ID, f.ExpectedValue, f.Control.STIGID)
 	}
 
 	return fmt.Sprintf(`- name: "Remediate %s - %s"
@@ -606,6 +606,51 @@ func filterByComponent(findings []models.Finding, component string) []models.Fin
 	return filtered
 }
 
+// stigCompliantValues maps flags/settings to their STIG-compliant values
+var stigCompliantValues = map[string]string{
+	// API Server flags
+	"--anonymous-auth":              "false",
+	"--insecure-port":               "0",
+	"--profiling":                   "false",
+	"--audit-log-path":              "{{ stig_apiserver_audit_log_path }}",
+	"--audit-policy-file":           "/etc/kubernetes/audit-policy.yaml",
+	"--audit-log-maxage":            "{{ stig_apiserver_audit_log_maxage }}",
+	"--audit-log-maxbackup":         "{{ stig_apiserver_audit_log_maxbackup }}",
+	"--audit-log-maxsize":           "{{ stig_apiserver_audit_log_maxsize }}",
+	"--tls-min-version":             "VersionTLS12",
+	"--tls-cipher-suites":           "{{ stig_tls_cipher_suites }}",
+	"--encryption-provider-config":  "/etc/kubernetes/encryption-config.yaml",
+	"--service-account-lookup":      "true",
+	"--kubelet-https":               "true",
+	"--authorization-mode":          "Node,RBAC",
+	"--enable-admission-plugins":    "NodeRestriction,AlwaysPullImages",
+	// Controller Manager flags
+	"--use-service-account-credentials": "true",
+	"--service-account-private-key-file": "/etc/kubernetes/pki/sa.key",
+	"--root-ca-file":                     "/etc/kubernetes/pki/ca.crt",
+	"--bind-address":                     "127.0.0.1",
+	// etcd flags
+	"--cert-file":             "/etc/kubernetes/pki/etcd/server.crt",
+	"--key-file":              "/etc/kubernetes/pki/etcd/server.key",
+	"--client-cert-auth":      "true",
+	"--peer-cert-file":        "/etc/kubernetes/pki/etcd/peer.crt",
+	"--peer-key-file":         "/etc/kubernetes/pki/etcd/peer.key",
+	"--peer-client-cert-auth": "true",
+}
+
+// stigCompliantYAMLValues maps YAML settings to their STIG-compliant values
+var stigCompliantYAMLValues = map[string]string{
+	"authentication.anonymous.enabled": "false",
+	"authorization.mode":               "Webhook",
+	"authentication.x509.clientCAFile": "/etc/kubernetes/pki/ca.crt",
+	"readOnlyPort":                     "0",
+	"streamingConnectionIdleTimeout":   "5m",
+	"protectKernelDefaults":            "true",
+	"makeIPTablesUtilChains":           "true",
+	"tlsCertFile":                      "/var/lib/kubelet/pki/kubelet.crt",
+	"tlsPrivateKeyFile":                "/var/lib/kubelet/pki/kubelet.key",
+}
+
 func parseExpectedFlag(expected string) (string, string) {
 	// Parse "--flag=value" or "--flag must be set" format
 	if strings.Contains(expected, "=") {
@@ -616,7 +661,31 @@ func parseExpectedFlag(expected string) (string, string) {
 	}
 	if strings.Contains(expected, " must be set") {
 		flag := strings.TrimSuffix(expected, " must be set")
-		return strings.TrimSpace(flag), "true"
+		flag = strings.TrimSpace(flag)
+		// Look up the proper value for this flag
+		if value, ok := stigCompliantValues[flag]; ok {
+			return flag, value
+		}
+		return flag, ""
+	}
+	if strings.Contains(expected, " must not be ") {
+		// Handle negation cases - extract just the flag
+		parts := strings.SplitN(expected, " must not be ", 2)
+		if len(parts) == 2 {
+			flag := strings.TrimSpace(parts[0])
+			if value, ok := stigCompliantValues[flag]; ok {
+				return flag, value
+			}
+		}
+	}
+	if strings.Contains(expected, " must contain ") {
+		parts := strings.SplitN(expected, " must contain ", 2)
+		if len(parts) == 2 {
+			flag := strings.TrimSpace(parts[0])
+			if value, ok := stigCompliantValues[flag]; ok {
+				return flag, value
+			}
+		}
 	}
 	return "", ""
 }
@@ -631,7 +700,12 @@ func parseExpectedYAML(expected string) (string, string) {
 	}
 	if strings.Contains(expected, " must be set") {
 		setting := strings.TrimSuffix(expected, " must be set")
-		return strings.TrimSpace(setting), "true"
+		setting = strings.TrimSpace(setting)
+		// Look up the proper value for this setting
+		if value, ok := stigCompliantYAMLValues[setting]; ok {
+			return setting, value
+		}
+		return setting, ""
 	}
 	return "", ""
 }
